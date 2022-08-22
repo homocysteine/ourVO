@@ -9,21 +9,42 @@ import pymap3d as pm
 from tqdm import tqdm
 import pandas as pd
 
-path = r"/media/yushichen/LENOVO_USB_HDD/projects/VisualOdometry/ipin_1/image_l"
+from superpoint_test import SuperpointNet, frame2tensor
+from matching import Matching
+import torch
 
+config = {
+        'superpoint': {
+            'nms_radius': 4,
+            'keypoint_threshold': 0.005,
+            'max_keypoints': -1,
+        },
+    'superglue': {
+                'weights': 'indoor',
+                'sinkhorn_iterations': 20,
+                'match_threshold': 0.2,
+            }
+    }
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+db_dir = '/media/yushichen/LENOVO_USB_HDD/IPIN_res/site_A/seq_2/'
+db_descriptor_dir = os.path.join(db_dir,'output_feature')
+db_gt_dir = os.path.join(db_dir, 'poses.txt')
 
-# path = r"E:\training\00_00"
+with_image_retrieval = False
+with_start_point_prediction = True
 
 
 class VisualOdometry():
-    def __init__(self, data_dir, method='orb'):
+    def __init__(self, data_dir, method='orb', matcher='flann'):
         # intrinsic
         self.K, self.P = self._load_calib(os.path.join(data_dir, 'calib.txt'))
         self.gt_poses = self._load_poses(os.path.join(data_dir, 'pose_converted.txt'))
         self.images = self._load_images(os.path.join(data_dir, 'image_l'))
         self.orb = cv2.ORB_create(3000)
         self.sift = cv2.xfeatures2d.SIFT_create(3000)
+        self.superpoint = SuperpointNet(config, device)
         self.method = method
+        self.matcher = matcher
         # orb
         if self.method == 'orb':
             FLANN_INDEX_LSH = 6
@@ -34,7 +55,11 @@ class VisualOdometry():
             FLANN_INDEX_KDTREE = 0
             index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
             search_params = dict(checks=50)
-        self.flann = cv2.FlannBasedMatcher(indexParams=index_params, searchParams=search_params)
+
+        if self.matcher == 'flann':
+            self.flann = cv2.FlannBasedMatcher(indexParams=index_params, searchParams=search_params)
+        else:
+            self.superglue = Matching(config).eval().to(device)
 
     @staticmethod
     def _load_calib(filepath):
@@ -125,24 +150,50 @@ class VisualOdometry():
         q1 (ndarray): The good keypoints matches position in i-1'th image
         q2 (ndarray): The good keypoints matches position in i'th image
         """
-        # Find the keypoints and descriptors with ORB
-        if self.method == 'orb':
-            kp1, des1 = self.orb.detectAndCompute(self.images[i - 1], None)
-            kp2, des2 = self.orb.detectAndCompute(self.images[i], None)
-        elif self.method == 'sift':
-            kp1, des1 = self.sift.detectAndCompute(self.images[i - 1], None)
-            kp2, des2 = self.sift.detectAndCompute(self.images[i], None)
-        # Find matches
-        matches = self.flann.knnMatch(des1, des2, k=2)
+        if self.matcher == 'flann':
+            # Find the keypoints and descriptors with ORB
+            if self.method == 'orb':
+                kp1, des1 = self.orb.detectAndCompute(self.images[i - 1], None)
+                kp2, des2 = self.orb.detectAndCompute(self.images[i], None)
+            elif self.method == 'sift':
+                kp1, des1 = self.sift.detectAndCompute(self.images[i - 1], None)
+                kp2, des2 = self.sift.detectAndCompute(self.images[i], None)
+            # Find matches
+            matches = self.flann.knnMatch(des1, des2, k=2)
 
-        # Find the matches there do not have a to high distance
-        good = []
-        try:
-            for m, n in matches:
-                if m.distance < 0.8 * n.distance:
-                    good.append(m)
-        except ValueError:
-            pass
+            # Find the matches there do not have a to high distance
+            good = []
+            try:
+                for m, n in matches:
+                    if m.distance < 0.8 * n.distance:
+                        good.append(m)
+            except ValueError:
+                pass
+
+        else:
+            frame_1 = frame2tensor(self.images[i - 1], device)
+            frame_2 = frame2tensor(self.images[i], device)
+            pred = self.superglue({'image0': frame_1, 'image1': frame_2})
+            kpts0 = pred['keypoints0'][0].cpu().numpy()
+            scores0 = pred['scores0'][0].cpu().detach().numpy()
+            kpts1 = pred['keypoints1'][0].cpu().numpy()
+            scores1 = pred['scores1'][0].cpu().detach().numpy()
+            matches = pred['matches0'][0].cpu().numpy()
+            confidence = pred['matching_scores0'][0].cpu().detach().numpy()
+            valid = matches > -1
+            mkpts0 = kpts0[valid]
+            mkpts1 = kpts1[matches[valid]]
+            mconf0 = confidence[valid]
+            good = []
+            for j in range(len(matches)):
+                if matches[j] != -1:
+                    good.append(cv2.DMatch(j, matches[j], 1 - confidence[j]))
+            kp1, kp2 = [], []
+            for j in range(len(kpts0)):
+                kp1.append(cv2.KeyPoint(kpts0[j][0], kpts0[j][1], scores0[j]))
+            for j in range(len(kpts1)):
+                kp2.append(cv2.KeyPoint(kpts1[j][0], kpts1[j][1], scores1[j]))
+            kp1, kp2 = tuple(kp1), tuple(kp2)
 
         draw_params = dict(matchColor=-1,  # draw matches in green color
                            singlePointColor=None,
@@ -252,8 +303,9 @@ class VisualOdometry():
 def main():
     # data_dir = "KITTI_sequence_1"  # Try KITTI_sequence_2 too
     data_dir = 'ipin_1'
-    method = 'sift'
-    vo = VisualOdometry(data_dir, method=method)
+    method = 'superpoint'
+    matcher = 'superglue'
+    vo = VisualOdometry(data_dir, method=method, matcher=matcher)
     images = os.listdir(os.path.join(data_dir, 'image_l'))
     images.sort()
     pose_path = os.path.join(data_dir, 'poses.txt')
