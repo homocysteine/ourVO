@@ -15,6 +15,7 @@ from scipy.spatial.transform import Rotation as R
 import pandas as pd
 from scale_confirm import qua2euler, qua2rm
 from match_query import relocalize
+from startingpoint_prediction import starting_point_prediction
 
 
 config = {
@@ -30,12 +31,15 @@ config = {
             }
     }
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-db_dir = '/media/yushichen/LENOVO_USB_HDD/IPIN_res/site_A/seq_2/'
+db_dir = '/media/yushichen/LENOVO_USB_HDD/IPIN_res/site_A/seq_4/'
 db_descriptor_dir = os.path.join(db_dir,'output_feature')
 db_gt_dir = os.path.join(db_dir, 'poses.txt')
 
 with_image_retrieval = True
 with_start_point_prediction = True
+
+longitude_scale = 3.258
+latitude_scale = 4.5
 
 
 class VisualOdometry():
@@ -315,7 +319,7 @@ class VisualOdometry():
 
 def main():
     # data_dir = "KITTI_sequence_1"  # Try KITTI_sequence_2 too
-    data_dir = 'ipin_2'
+    data_dir = 'ipin_3'
     method = 'superpoint'
     matcher = 'superglue'
     vo = VisualOdometry(data_dir, method=method, matcher=matcher)
@@ -346,9 +350,10 @@ def main():
         image_path = os.path.join(image_dir, images[i])
         if i == 0:
             if with_start_point_prediction:
-                res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
-                qua_pose = [res[4], res[5], res[6], res[7]]
-                inital_longitude, initial_latitude = res[1], res[2]
+                # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                res = starting_point_prediction(image_path)
+                qua_pose = [res[3], res[4], res[5], res[6]]
+                inital_longitude, initial_latitude = res[0], res[1]
             else:
                 qua_pose = [pose_df.iloc[0][4], pose_df.iloc[0][5], pose_df.iloc[0][6],
                             pose_df.iloc[0][7]] # w, x, y, z
@@ -388,21 +393,21 @@ def main():
             relocalization = False
         print('rotation difference: ', euler[-1] - initial_rotation)
         # detect big rotation
-
-
-        if with_image_retrieval:
+        if with_image_retrieval and i>500:
             if initial_rotation >= -90 and initial_rotation <= 90:
                 if (euler[-1] > initial_rotation - 90) and (euler[-1] <= initial_rotation + 90):
                     print('ok')
                 else:
                     relocalization = True
-                    res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    res = starting_point_prediction(image_path)
                     # exit(-1)
             elif initial_rotation < -90 and initial_rotation >= -180:  # three
                 base_rotation = initial_rotation + 180
                 if (euler[-1] > base_rotation - 90) and (euler[-1] <= base_rotation + 90):
                     relocalization = True
-                    res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    res = starting_point_prediction(image_path)
                     # exit(-1)
                 else:
                     print('ok')
@@ -410,35 +415,45 @@ def main():
                 base_rotation = initial_rotation - 180
                 if (euler[-1] > base_rotation - 90) and (euler[-1] <= base_rotation + 90):
                     relocalization = True
-                    res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                    res = starting_point_prediction(image_path)
                     # exit(-1)
                 else:
                     print('ok')
+            # if i%800 == 0:
+            #     relocalization = True
+            #     res = starting_point_prediction(image_path)
             if relocalization:
-                correct_longitude, correct_latitude = res[1], res[2]
-                correct_w, correct_x, correct_y, correct_z = res[4], res[5], res[6], res[7]
+                correct_longitude, correct_latitude = res[0], res[1]
+                correct_w, correct_x, correct_y, correct_z = res[3], res[4], res[5], res[6]
                 rm = qua2rm(correct_w, 0, correct_z, 0)
-                x = (correct_longitude - inital_longitude)*3.62*(1e6)
+                x = (correct_longitude - inital_longitude)*longitude_scale*(1e6)
                 y = 0.0
-                z = (correct_latitude - initial_latitude)*5*(1e6)
+                z = (correct_latitude - initial_latitude)*latitude_scale*(1e6)
                 cur_pose = np.array([
                     [rm[0][0], rm[0][1], rm[0][2], x],
                     [rm[1][0], rm[1][1], rm[1][2], y],
                     [rm[2][0], rm[2][1], rm[2][2], z],
                     [0.0, 0.0, 0.0, 1.0]
                 ])
+                # cur_pose = np.array([
+                #     [cur_pose[0][0], cur_pose[0][1], cur_pose[0][2], x],
+                #     [cur_pose[1][0], cur_pose[1][1], cur_pose[1][2], y],
+                #     [cur_pose[2][0], cur_pose[2][1], cur_pose[2][2], z],
+                #     [0.0, 0.0, 0.0, 1.0]
+                # ])
 
         estimated_path.append((cur_pose[0, 3], cur_pose[2, 3])) # current pose with x, y
         # print('predict: x, y, z ',(cur_pose[0, 3], cur_pose[2, 3], cur_pose[1, 3]))
         x, y, z = cur_pose[0, 3], cur_pose[2, 3], cur_pose[1, 3]
         longitude, latitude = pose_df.iloc[i][1], pose_df.iloc[i][2]
-        x_true, y_true = (longitude-inital_longitude)*3.62*(1e6), (latitude - initial_latitude)*5*(1e6)
+        x_true, y_true = (longitude-inital_longitude)*longitude_scale*(1e6), (latitude - initial_latitude)*latitude_scale*(1e6)
         gt_path.append((x_true, y_true))  # gt pose
         # convert R to quaterion
 
 
-        draw_x, draw_y = 400 + int(draw_scale * x) , 300 - int(draw_scale * y)
-        true_x, true_y = int(draw_scale*x_true) + 400, 300 - int(draw_scale*y_true)
+        draw_x, draw_y = 400 + int(draw_scale * x) , 400 - int(draw_scale * y)
+        true_x, true_y = int(draw_scale*x_true) + 400, 400 - int(draw_scale*y_true)
         cv2.circle(traj_img, (draw_x, draw_y), 1, (i * 255 / 4540, 255 - i * 255 / 4540, 0),
                    1)  # estimated from green to blue
         cv2.circle(traj_img, (true_x, true_y), 1,(0, 0, 255), 1)  # groundtruth in red
