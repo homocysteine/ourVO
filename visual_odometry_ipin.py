@@ -16,6 +16,7 @@ import pandas as pd
 from scale_confirm import qua2euler, qua2rm
 from match_query import relocalize
 from startingpoint_prediction import starting_point_prediction
+import time
 
 
 config = {
@@ -319,7 +320,8 @@ class VisualOdometry():
 
 def main():
     # data_dir = "KITTI_sequence_1"  # Try KITTI_sequence_2 too
-    data_dir = 'ipin_3'
+    print('System Start!')
+    data_dir = 'ipin_1'
     method = 'superpoint'
     matcher = 'superglue'
     vo = VisualOdometry(data_dir, method=method, matcher=matcher)
@@ -351,7 +353,10 @@ def main():
         if i == 0:
             if with_start_point_prediction:
                 # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
+                time1 = time.time()
                 res = starting_point_prediction(image_path)
+                time2 = time.time()
+                print('Strarting Point Prediction: ', time2 - time1)
                 qua_pose = [res[3], res[4], res[5], res[6]]
                 inital_longitude, initial_latitude = res[0], res[1]
             else:
@@ -376,9 +381,12 @@ def main():
             #     [0.0, 0.0, 0.0, 1.0]
             # ]) # the first pose is from gt
         else:
+            time5 = time.time()
             q1, q2 = vo.get_matches(i)
             transf = vo.get_pose(q1, q2)
             cur_pose = np.matmul(cur_pose, np.linalg.inv(transf))
+            time6 = time.time()
+            print('Pose estimation: ', time6 - time5)
 
         Rm = cur_pose[0:3, 0:3]
         r3 = R.from_matrix(Rm)
@@ -394,6 +402,7 @@ def main():
         print('rotation difference: ', euler[-1] - initial_rotation)
         # detect big rotation
         if with_image_retrieval and i>500:
+            time3 = time.time()
             if initial_rotation >= -90 and initial_rotation <= 90:
                 if (euler[-1] > initial_rotation - 90) and (euler[-1] <= initial_rotation + 90):
                     print('ok')
@@ -442,6 +451,9 @@ def main():
                 #     [cur_pose[2][0], cur_pose[2][1], cur_pose[2][2], z],
                 #     [0.0, 0.0, 0.0, 1.0]
                 # ])
+            time4 = time.time()
+            print('Relocalization: ', time4 - time3)
+
 
         estimated_path.append((cur_pose[0, 3], cur_pose[2, 3])) # current pose with x, y
         # print('predict: x, y, z ',(cur_pose[0, 3], cur_pose[2, 3], cur_pose[1, 3]))
