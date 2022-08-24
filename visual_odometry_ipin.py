@@ -48,7 +48,8 @@ class VisualOdometry():
         # intrinsic
         self.K, self.P = self._load_calib(os.path.join(data_dir, 'calib.txt'))
         # self.gt_poses = self._load_poses(os.path.join(data_dir,"poses.txt"))
-        self.images = self._load_images(os.path.join(data_dir,"image_l"))
+        # self.images = self._load_images(os.path.join(data_dir,"image_l"))
+        self.images = []
         self.orb = cv2.ORB_create(3000)
         self.sift = cv2.xfeatures2d.SIFT_create(3000)
         self.superpoint = SuperpointNet(config, device)
@@ -350,6 +351,7 @@ def main():
     relocalization = False
     for i in tqdm(range(len(images))):
         image_path = os.path.join(image_dir, images[i])
+        vo.images.append(cv2.imread(image_path, cv2.IMREAD_GRAYSCALE))
         if i == 0:
             if with_start_point_prediction:
                 # res = relocalize(image_path, db_descriptor_dir, db_gt_dir)
