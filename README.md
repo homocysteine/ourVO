@@ -22,3 +22,8 @@ python visual_odometry_wanglong.py
 You may need to change the relative path for adjust your prepared data.
 SuperPoint and SuperGlue model file is also needed in the projects, please download by yourself.
 
+## Trial
+If you wanna use the code for server trial, just fullfill the server information in track_client2c.py, and run
+```angular2html
+python track_client2c.py
+```
