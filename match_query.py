@@ -156,7 +156,7 @@ def match_two(model, device, config, im_one, feature_dir):
     db_feature_list = os.listdir(feature_dir)
     db_feature_list.sort()
     place1 = time.time()
-    for i in range(0, len(db_feature_list), 10):
+    for i in range(0, len(db_feature_list), 20):
         if db_feature_list[i] == 'globalfeats.npy':
             continue
         local_feats_two_np = np.load(os.path.join(feature_dir, db_feature_list[i]))
@@ -201,9 +201,9 @@ def main():
     parser = argparse.ArgumentParser(description='Patch-NetVLAD-Match-Two')
     parser.add_argument('--config_path', type=str, default='./patchnetvlad/configs/speed.ini',
                         help='File name (with extension) to an ini file that stores most of the configuration data for patch-netvlad')
-    parser.add_argument('--first_im_path', type=str, default='/media/yushichen/LENOVO_USB_HDD/IPIN_res/query/frame_000962.png',
+    parser.add_argument('--first_im_path', type=str, default='/media/yushichen/LENOVO_USB_HDD/IPIN_res/site_A/seq_1/query/frame_000962.png',
                         help='Full path (with extension) to an image file')
-    parser.add_argument('--feature_dir', type=str, default='/media/yushichen/LENOVO_USB_HDD/IPIN_res/output_feature',
+    parser.add_argument('--feature_dir', type=str, default='/media/yushichen/LENOVO_USB_HDD/IPIN_res/site_A/seq_5/output_feature',
                         help='Full path (with extension) to another image file')
     # parser.add_argument('--plot_save_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'results'),
     #                     help='Path plus optional prefix pointing to a location to save the output matching plot')
@@ -316,7 +316,7 @@ def relocalize(im_path, feature_dir, gt_dir):
     return res
 
 def retrieval(model, device, config, im_one, feature_dir, gt_dir):
-    df = pd.read_csv(gt_dir, sep=' ', header=None, index_col=0)
+    df = pd.read_csv(gt_dir, sep=' ', header=None)
 
     pool_size = int(config['global_params']['num_pcs'])
 
@@ -370,7 +370,7 @@ def retrieval(model, device, config, im_one, feature_dir, gt_dir):
     place1 = time.time()
     # similar_table = {}
     max_similar, max_image_name = 0.0, ''
-    for i in tqdm(range(0, len(db_feature_list), 20)):
+    for i in tqdm(range(0, len(db_feature_list), 10)):
         if db_feature_list[i] == 'globalfeats.npy':
             continue
         local_feats_two_np = np.load(os.path.join(feature_dir, db_feature_list[i]))
@@ -380,10 +380,10 @@ def retrieval(model, device, config, im_one, feature_dir, gt_dir):
         file_name = 'images/f' + db_feature_list[i].lstrip('patchfeats_psize5_').rstrip('npy') + 'png'
         # similar_table[file_name] = score
         # print(f"Similarity score between the two images is: {score:.5f}. Larger scores indicate better matches.",
-        #       file_name)
+        #       i, file_name)
         if score > max_similar:
             max_similar = score
-            max_image_name = file_name
+            max_image_index = i
     # print('max similar: ', max_similar, max_image_name)
     # print(df.loc[max_image_name])
 
@@ -394,7 +394,56 @@ def retrieval(model, device, config, im_one, feature_dir, gt_dir):
     time3 = time.time()
     print('extracting time: ', time2 - time1)
     print('matching time: ', place2 - place1)
-    return df.loc[max_image_name], max_similar
+    return df.loc[max_image_index], max_similar
+
+
+def relocalize_for_trial(image_data, feature_dir, gt_dir):
+    print('Start relocalization!!!')
+    configfile = './patchnetvlad/configs/speed.ini'
+    assert os.path.isfile(configfile)
+    config = configparser.ConfigParser()
+    config.read(configfile)
+
+    cuda = True
+
+    device = torch.device("cuda" if cuda else "cpu")
+
+    encoder_dim, encoder = get_backend()
+
+    # must resume to do extraction
+    resume_ckpt = config['global_params']['resumePath'] + config['global_params']['num_pcs'] + '.pth.tar'
+
+    if isfile(resume_ckpt):
+        print("=> loading checkpoint '{}'".format(resume_ckpt))
+        checkpoint = torch.load(resume_ckpt, map_location=lambda storage, loc: storage)
+        assert checkpoint['state_dict']['WPCA.0.bias'].shape[0] == int(config['global_params']['num_pcs'])
+        config['global_params']['num_clusters'] = str(checkpoint['state_dict']['pool.centroids'].shape[0])
+
+        model = get_model(encoder, encoder_dim, config['global_params'], append_pca_layer=True)
+
+        if int(config['global_params']['nGPU']) > 1 and torch.cuda.device_count() > 1:
+            model.encoder = nn.DataParallel(model.encoder)
+            # if opt.mode.lower() != 'cluster':
+            model.pool = nn.DataParallel(model.pool)
+
+        model.load_state_dict(checkpoint['state_dict'])
+        model = model.to(device)
+        print("=> loaded checkpoint '{}'".format(resume_ckpt, ))
+    else:
+        raise FileNotFoundError("=> no checkpoint found at '{}'".format(resume_ckpt))
+
+    # im_one = cv2.imread(im_path, -1)
+    im_one = np.asarray(image_data)
+    if im_one is None:
+        raise FileNotFoundError("File does not exist")
+
+    # match_two(model, device, config, im_one, feature_dir)
+    res = retrieval(model, device, config, im_one, feature_dir, gt_dir)
+
+    torch.cuda.empty_cache()  # garbage clean GPU memory, a bug can occur when Pytorch doesn't automatically clear the
+    # memory after runs
+    print('Done')
+    return res
 
 
 if __name__ == "__main__":
